@@ -206,6 +206,99 @@ export class TimetableService {
       throw error;
     }
   }
+  static async saveTimetableSlot(slot: Omit<TimetableSlot, 'id'>): Promise<string> {
+    try {
+      const docRef = await addDoc(collection(db, COLLECTIONS.TIMETABLE_SLOTS), {
+        ...slot,
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now()
+      });
+      return docRef.id;
+    } catch (error) {
+      console.error('Error saving timetable slot:', error);
+      throw error;
+    }
+  }
+
+  // Batch save multiple timetable slots
+  static async batchSaveTimetableSlots(slots: Omit<TimetableSlot, 'id'>[]): Promise<void> {
+    try {
+      const batch = writeBatch(db);
+      const collectionRef = collection(db, COLLECTIONS.TIMETABLE_SLOTS);
+
+      slots.forEach((slot) => {
+        const docRef = doc(collectionRef);
+        batch.set(docRef, {
+          ...slot,
+          createdAt: Timestamp.now(),
+          updatedAt: Timestamp.now()
+        });
+      });
+
+      await batch.commit();
+    } catch (error) {
+      console.error('Error batch saving timetable slots:', error);
+      throw error;
+    }
+  }
+
+  // Get timetable slots by year and semester
+  static async getSlotsByYearAndSemester(year: string, semester: number): Promise<TimetableSlot[]> {
+    try {
+      const q = query(
+        collection(db, COLLECTIONS.TIMETABLE_SLOTS),
+        where('year', '==', year),
+        where('semester', '==', semester),
+        orderBy('day'),
+        orderBy('time')
+      );
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as TimetableSlot));
+    } catch (error) {
+      console.error('Error fetching timetable slots by year and semester:', error);
+      throw error;
+    }
+  }
+
+  // Get timetable slots by year, semester and batch
+  static async getSlotsByYearSemesterAndBatch(year: string, semester: number, batch?: string): Promise<TimetableSlot[]> {
+    try {
+      let q;
+      if (batch) {
+        q = query(
+          collection(db, COLLECTIONS.TIMETABLE_SLOTS),
+          where('year', '==', year),
+          where('semester', '==', semester),
+          where('batch', '==', batch),
+          orderBy('day'),
+          orderBy('time')
+        );
+      } else {
+        // For theory classes (no batch filter)
+        q = query(
+          collection(db, COLLECTIONS.TIMETABLE_SLOTS),
+          where('year', '==', year),
+          where('semester', '==', semester),
+          where('type', '==', 'theory'),
+          orderBy('day'),
+          orderBy('time')
+        );
+      }
+      
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as TimetableSlot));
+    } catch (error) {
+      console.error('Error fetching timetable slots by year, semester and batch:', error);
+      throw error;
+    }
+  }
+
 }
 
 // Data initialization service

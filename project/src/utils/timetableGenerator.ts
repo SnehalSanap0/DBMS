@@ -59,36 +59,101 @@ export class TimetableGenerator {
     }
   }
 
-  private generateTheorySchedules(): void {
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-    const morningSlots = ['8:00-9:00', '9:00-10:00', '10:15-11:15', '11:15-12:15'];
-    const afternoonSlots = ['1:15-2:15', '2:15-3:15', '3:15-4:15', '4:15-5:15'];
+ // Update the generateTheorySchedules method in timetableGenerator.ts to include semester
 
-    for (const year of ['SE', 'TE', 'BE'] as const) {
-      const yearSubjects = this.subjects.filter(s => s.year === year);
-      const assignedClassroom = this.classrooms.find(c => c.assignedYear === year);
+private generateTheorySchedules(): void {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const morningSlots = ['8:00-9:00', '9:00-10:00', '10:15-11:15', '11:15-12:15'];
+  const afternoonSlots = ['1:15-2:15', '2:15-3:15', '3:15-4:15', '4:15-5:15'];
+
+  for (const year of ['SE', 'TE', 'BE'] as const) {
+    const yearSubjects = this.subjects.filter(s => s.year === year);
+    const assignedClassroom = this.classrooms.find(c => c.assignedYear === year);
+    
+    if (!assignedClassroom) {
+      this.conflicts.push({
+        type: 'error',
+        message: `No classroom assigned for year ${year}`,
+        severity: 'high',
+        affectedEntities: [year]
+      });
+      continue;
+    }
+
+    let currentDay = 0;
+    let currentSlot = 0;
+    const availableSlots = assignedClassroom.timeSlot === '8AM-3PM' 
+      ? [...morningSlots, ...afternoonSlots.slice(0, 2)]
+      : [...morningSlots.slice(2), ...afternoonSlots];
+
+    for (const subject of yearSubjects) {
+      const facultyMember = this.faculty.find(f => f.name === subject.faculty);
       
-      if (!assignedClassroom) {
-        this.conflicts.push({
-          type: 'error',
-          message: `No classroom assigned for year ${year}`,
-          severity: 'high',
-          affectedEntities: [year]
-        });
-        continue;
-      }
+      for (let hour = 0; hour < subject.theoryHours; hour++) {
+        if (currentSlot >= availableSlots.length) {
+          currentDay++;
+          currentSlot = 0;
+        }
 
+        if (currentDay >= days.length) {
+          this.conflicts.push({
+            type: 'warning',
+            message: `Insufficient slots for ${subject.name} in ${year}`,
+            severity: 'medium',
+            affectedEntities: [subject.name, year]
+          });
+          break;
+        }
+
+        const slot: TimetableSlot = {
+          id: `${year}-${subject.code}-${days[currentDay]}-${availableSlots[currentSlot]}`,
+          day: days[currentDay],
+          time: availableSlots[currentSlot],
+          subject: subject.name,
+          faculty: subject.faculty,
+          room: assignedClassroom.name,
+          type: 'theory',
+          year: year,
+          duration: 1,
+          semester: subject.semester // Add semester from subject data
+        };
+
+        // Check for faculty conflicts
+        if (this.hasFacultyConflict(slot)) {
+          this.conflicts.push({
+            type: 'warning',
+            message: `Faculty conflict for ${subject.faculty} on ${days[currentDay]} at ${availableSlots[currentSlot]}`,
+            severity: 'medium',
+            affectedEntities: [subject.faculty, subject.name]
+          });
+        } else {
+          this.generatedSlots.push(slot);
+        }
+
+        currentSlot++;
+      }
+    }
+  }
+}
+
+// Update the generateLabSchedules method to include semester
+
+private generateLabSchedules(): void {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const labSlots = ['1:15-3:15', '3:15-5:15']; // 2-hour slots
+  
+  for (const year of ['SE', 'TE', 'BE'] as const) {
+    for (const batch of ['A', 'B', 'C'] as const) {
+      const yearSubjects = this.subjects.filter(s => s.year === year && s.labHours > 0);
+      
       let currentDay = 0;
       let currentSlot = 0;
-      const availableSlots = assignedClassroom.timeSlot === '8AM-3PM' 
-        ? [...morningSlots, ...afternoonSlots.slice(0, 2)]
-        : [...morningSlots.slice(2), ...afternoonSlots];
 
       for (const subject of yearSubjects) {
-        const facultyMember = this.faculty.find(f => f.name === subject.faculty);
+        const sessionsNeeded = Math.ceil(subject.labHours / 2); // 2-hour sessions
         
-        for (let hour = 0; hour < subject.theoryHours; hour++) {
-          if (currentSlot >= availableSlots.length) {
+        for (let session = 0; session < sessionsNeeded; session++) {
+          if (currentSlot >= labSlots.length) {
             currentDay++;
             currentSlot = 0;
           }
@@ -96,106 +161,47 @@ export class TimetableGenerator {
           if (currentDay >= days.length) {
             this.conflicts.push({
               type: 'warning',
-              message: `Insufficient slots for ${subject.name} in ${year}`,
+              message: `Insufficient lab slots for ${subject.name} - ${year}-${batch}`,
               severity: 'medium',
-              affectedEntities: [subject.name, year]
+              affectedEntities: [subject.name, `${year}-${batch}`]
             });
             break;
           }
 
-          const slot: TimetableSlot = {
-            id: `${year}-${subject.code}-${days[currentDay]}-${availableSlots[currentSlot]}`,
-            day: days[currentDay],
-            time: availableSlots[currentSlot],
-            subject: subject.name,
-            faculty: subject.faculty,
-            room: assignedClassroom.name,
-            type: 'theory',
-            year: year,
-            duration: 1
-          };
-
-          // Check for faculty conflicts
-          if (this.hasFacultyConflict(slot)) {
+          const availableLab = this.findAvailableLab(days[currentDay], labSlots[currentSlot], subject);
+          
+          if (!availableLab) {
             this.conflicts.push({
               type: 'warning',
-              message: `Faculty conflict for ${subject.faculty} on ${days[currentDay]} at ${availableSlots[currentSlot]}`,
+              message: `No available lab for ${subject.name} - ${year}-${batch} on ${days[currentDay]}`,
               severity: 'medium',
-              affectedEntities: [subject.faculty, subject.name]
+              affectedEntities: [subject.name, `${year}-${batch}`]
             });
-          } else {
-            this.generatedSlots.push(slot);
+            currentSlot++;
+            continue;
           }
 
+          const slot: TimetableSlot = {
+            id: `${year}-${batch}-${subject.code}-${days[currentDay]}-${labSlots[currentSlot]}`,
+            day: days[currentDay],
+            time: labSlots[currentSlot],
+            subject: `${subject.name} Lab`,
+            faculty: subject.faculty,
+            room: availableLab.name,
+            type: 'lab',
+            year: year,
+            batch: batch,
+            duration: 2,
+            semester: subject.semester // Add semester from subject data
+          };
+
+          this.generatedSlots.push(slot);
           currentSlot++;
         }
       }
     }
   }
-
-  private generateLabSchedules(): void {
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-    const labSlots = ['1:15-3:15', '3:15-5:15']; // 2-hour slots
-    
-    for (const year of ['SE', 'TE', 'BE'] as const) {
-      for (const batch of ['A', 'B', 'C'] as const) {
-        const yearSubjects = this.subjects.filter(s => s.year === year && s.labHours > 0);
-        
-        let currentDay = 0;
-        let currentSlot = 0;
-
-        for (const subject of yearSubjects) {
-          const sessionsNeeded = Math.ceil(subject.labHours / 2); // 2-hour sessions
-          
-          for (let session = 0; session < sessionsNeeded; session++) {
-            if (currentSlot >= labSlots.length) {
-              currentDay++;
-              currentSlot = 0;
-            }
-
-            if (currentDay >= days.length) {
-              this.conflicts.push({
-                type: 'warning',
-                message: `Insufficient lab slots for ${subject.name} - ${year}-${batch}`,
-                severity: 'medium',
-                affectedEntities: [subject.name, `${year}-${batch}`]
-              });
-              break;
-            }
-
-            const availableLab = this.findAvailableLab(days[currentDay], labSlots[currentSlot], subject);
-            
-            if (!availableLab) {
-              this.conflicts.push({
-                type: 'warning',
-                message: `No available lab for ${subject.name} - ${year}-${batch} on ${days[currentDay]}`,
-                severity: 'medium',
-                affectedEntities: [subject.name, `${year}-${batch}`]
-              });
-              currentSlot++;
-              continue;
-            }
-
-            const slot: TimetableSlot = {
-              id: `${year}-${batch}-${subject.code}-${days[currentDay]}-${labSlots[currentSlot]}`,
-              day: days[currentDay],
-              time: labSlots[currentSlot],
-              subject: `${subject.name} Lab`,
-              faculty: subject.faculty,
-              room: availableLab.name,
-              type: 'lab',
-              year: year,
-              batch: batch,
-              duration: 2
-            };
-
-            this.generatedSlots.push(slot);
-            currentSlot++;
-          }
-        }
-      }
-    }
-  }
+}
 
   private findAvailableLab(day: string, time: string, subject: Subject): Lab | null {
     // Find a lab that's not already booked for this time slot

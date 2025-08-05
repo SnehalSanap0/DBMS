@@ -3,6 +3,7 @@ import { Play, Settings, AlertCircle, CheckCircle, Clock, Calendar, Users, BookO
 import { useTimetableData } from '../hooks/useTimetableData';
 import { TimetableService } from '../services/firebase';
 import { LoadingSpinner } from './LoadingSpinner';
+import { TimetableGenerator } from '../utils/timetableGenerator';
 
 interface GenerationConfig {
   semester: number;
@@ -159,136 +160,148 @@ const TimetableGeneration = () => {
 
   const simulateGeneration = async () => {
     const steps = [
-      { step: 'Analyzing constraints and requirements...', progress: 20 },
-      { step: 'Allocating theory sessions...', progress: 40 },
-      { step: 'Scheduling laboratory sessions...', progress: 60 },
-      { step: 'Optimizing faculty schedules...', progress: 80 },
+      { step: 'Analyzing constraints and requirements...', progress: 15 },
+      { step: 'Loading subjects and faculty data...', progress: 30 },
+      { step: 'Allocating theory sessions...', progress: 50 },
+      { step: 'Scheduling laboratory sessions...', progress: 70 },
+      { step: 'Optimizing faculty schedules...', progress: 85 },
       { step: 'Validating final timetable...', progress: 95 },
+      { step: 'Saving to database...', progress: 98 },
       { step: 'Generation complete!', progress: 100 },
     ];
 
     for (const { step, progress } of steps) {
       setCurrentStep(step);
       setGenerationProgress(progress);
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise(resolve => setTimeout(resolve, 800));
     }
   };
 
-  const generateSampleTimetableSlots = () => {
-    // Generate sample timetable slots based on current configuration
+  // Replace the handleGenerate function in TimetableGeneration.tsx
+
+const handleGenerate = async () => {
+  // Check for critical errors
+  const criticalErrors = conflicts.filter(c => c.type === 'error');
+  if (criticalErrors.length > 0) {
+    alert('Cannot generate timetable due to configuration errors. Please fix them first.');
+    return;
+  }
+
+  setIsGenerating(true);
+  setGenerationStatus('running');
+  setGenerationProgress(0);
+  
+  try {
+    // Clear existing timetable slots from database for this year and semester
+    setCurrentStep('Clearing existing timetable data...');
+    setGenerationProgress(10);
+    await TimetableService.clearAllSlots();
+    
+    // Simulate generation process UI steps
+    await simulateGeneration();
+    
+    // Filter data for selected semester and year from Firebase data
+    setCurrentStep('Loading configuration data...');
     const semesterSubjects = subjects.filter(s => s.semester === config.semester && s.year === config.year);
-    const sampleSlots = [];
+    const yearClassrooms = classrooms.filter(c => c.assignedYear === config.year);
+    const relevantFaculty = faculty.filter(f => 
+      semesterSubjects.some(s => f.name === s.faculty)
+    );
+
+    if (semesterSubjects.length === 0) {
+      throw new Error(`No subjects found for ${config.year} Semester ${config.semester}`);
+    }
+
+    if (yearClassrooms.length === 0) {
+      throw new Error(`No classrooms assigned to ${config.year}`);
+    }
+
+    setCurrentStep('Generating timetable with constraints...');
+    setGenerationProgress(60);
+
+    // Create constraints object
+    const constraints = {
+      maxHoursPerDay: 6,
+      minBreakBetweenClasses: config.breakDuration,
+      maxConsecutiveHours: config.maxConsecutiveHours,
+      prioritizeLabAfternoon: config.prioritizeLabAfternoon,
+      allowBackToBackTheory: config.allowBackToBackTheory,
+      facultyRestSlots: 1,
+    };
+
+    // Generate timetable using the TimetableGenerator with Firebase data
+    const generator = new TimetableGenerator(
+      semesterSubjects,
+      relevantFaculty,
+      yearClassrooms,
+      labs,
+      constraints
+    );
+
+    const result = generator.generateTimetable();
     
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-    const timeSlots = [
-      '8:00-9:00', '9:00-10:00', '10:15-11:15', '11:15-12:15', '1:15-3:15', '3:15-5:15'
+    setCurrentStep('Saving timetable to database...');
+    setGenerationProgress(90);
+
+    // Add semester field to each generated slot
+    const slotsWithSemester = result.slots.map(slot => ({
+      ...slot,
+      semester: config.semester
+    }));
+    
+    // Save generated slots to Firebase using batch operation
+    if (slotsWithSemester.length > 0) {
+      await TimetableService.batchSaveTimetableSlots(slotsWithSemester);
+      
+      // Update local state with generated slots (including semester)
+      setTimetableSlots(slotsWithSemester);
+      
+      setCurrentStep('Timetable generation completed successfully!');
+      setGenerationProgress(100);
+    } else {
+      throw new Error('No timetable slots were generated');
+    }
+    
+    setGenerationStatus('success');
+    setLastGenerated(new Date());
+    
+    // Update conflicts with generation results
+    const updatedConflicts = [
+      {
+        type: 'success' as const,
+        message: `Successfully generated and saved timetable for ${config.year} Semester ${config.semester}`,
+        severity: 'low' as const,
+      },
+      {
+        type: 'info' as const,
+        message: `Generated ${result.slots.length} time slots and saved to database`,
+        severity: 'low' as const,
+      },
+      ...result.conflicts.map(conflict => ({
+        type: conflict.type,
+        message: conflict.message,
+        severity: conflict.severity
+      }))
     ];
-
-    days.forEach(day => {
-      timeSlots.forEach((time, index) => {
-        if (index < 4) { // Theory slots (morning)
-          const subject = semesterSubjects[Math.floor(Math.random() * semesterSubjects.length)];
-          if (subject) {
-            sampleSlots.push({
-              day,
-              time,
-              subject: subject.name,
-              subjectCode: subject.code,
-              faculty: subject.faculty,
-              room: classrooms.find(c => c.assignedYear === config.year)?.name || 'TBA',
-              type: 'theory' as const,
-              year: config.year,
-              semester: config.semester,
-            });
-          }
-        } else if (index >= 4) { // Lab slots (afternoon)
-          const labSubject = semesterSubjects.find(s => s.labHours > 0);
-          if (labSubject && Math.random() > 0.5) { // 50% chance for lab
-            sampleSlots.push({
-              day,
-              time,
-              subject: `${labSubject.name} Lab`,
-              subjectCode: `${labSubject.code}_LAB`,
-              faculty: labSubject.faculty,
-              room: labs[Math.floor(Math.random() * labs.length)]?.name || 'Lab TBA',
-              type: 'lab' as const,
-              year: config.year,
-              semester: config.semester,
-              batch: ['A', 'B', 'C'][Math.floor(Math.random() * 3)],
-            });
-          }
-        }
-      });
-    });
-
-    return sampleSlots;
-  };
-
-  const handleGenerate = async () => {
-    // Check for critical errors
-    const criticalErrors = conflicts.filter(c => c.type === 'error');
-    if (criticalErrors.length > 0) {
-      alert('Cannot generate timetable due to configuration errors. Please fix them first.');
-      return;
-    }
-
-    setIsGenerating(true);
-    setGenerationStatus('running');
-    setGenerationProgress(0);
     
-    try {
-      // Clear existing timetable slots
-      await TimetableService.clearAllSlots();
-      
-      // Simulate generation process
-      await simulateGeneration();
-      
-      // Generate and save sample timetable slots
-      const sampleSlots = generateSampleTimetableSlots();
-      
-      // In a real implementation, you would call the actual generation algorithm here
-      // For now, we'll just save the sample slots
-      for (const slot of sampleSlots) {
-        // Note: In the real implementation, you'd want to batch these operations
-        // await timetableSlotsService.add(slot);
-      }
-      
-      // Update local state with generated slots
-      setTimetableSlots(sampleSlots);
-      
-      setGenerationStatus('success');
-      setLastGenerated(new Date());
-      
-      // Update conflicts with success message
-      setConflicts([
-        {
-          type: 'success',
-          message: `Successfully generated timetable for ${config.year} Semester ${config.semester}`,
-          severity: 'low',
-        },
-        {
-          type: 'info',
-          message: `Generated ${sampleSlots.length} time slots across 5 days`,
-          severity: 'low',
-        },
-      ]);
-      
-    } catch (error) {
-      console.error('Error generating timetable:', error);
-      setGenerationStatus('error');
-      setConflicts([
-        {
-          type: 'error',
-          message: 'Failed to generate timetable. Please try again.',
-          severity: 'high',
-        },
-      ]);
-    } finally {
-      setIsGenerating(false);
-      setCurrentStep('');
-      setGenerationProgress(0);
-    }
-  };
+    setConflicts(updatedConflicts);
+    
+  } catch (error) {
+    console.error('Error generating timetable:', error);
+    setGenerationStatus('error');
+    setConflicts([
+      {
+        type: 'error',
+        message: `Failed to generate timetable: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        severity: 'high',
+      },
+    ]);
+  } finally {
+    setIsGenerating(false);
+    setCurrentStep('');
+    setGenerationProgress(0);
+  }
+};
 
   const getStatusIcon = () => {
     switch (generationStatus) {
